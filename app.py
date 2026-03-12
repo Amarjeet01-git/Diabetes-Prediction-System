@@ -232,7 +232,7 @@ st.markdown("""
 
 # Patient Name
 st.markdown('<div class="card"><div class="card-title">👤 Patient Information</div>', unsafe_allow_html=True)
-patient_name = st.text_input("Patient Name", placeholder="e.g. Amar Jeet Singh")
+patient_name = st.text_input("Patient Name", placeholder="e.g. AmarJeet thakur")
 st.markdown('</div>', unsafe_allow_html=True)
 
 # Diagnostics
