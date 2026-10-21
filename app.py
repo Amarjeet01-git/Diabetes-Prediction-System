@@ -2,7 +2,17 @@ import streamlit as st
 import numpy as np
 import pickle
 import os
+import io
+import re
 from datetime import datetime
+from xml.sax.saxutils import escape
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -127,6 +137,119 @@ except Exception as e:
     st.error(f"⚠️ Model load failed: {e}")
     st.info("Please run `python train_model.py` locally and push `diabetes_model.pkl` to your repo.")
     st.stop()
+
+# ── PDF Report Generation ──────────────────────────────────────────────────────
+def create_pdf_report(record):
+    """Create a downloadable PDF containing the prediction and all input values."""
+    pdf_buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=17 * mm,
+        bottomMargin=17 * mm,
+        title="Diabetes Prediction Report",
+        author="Diabetes Predictor",
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="ReportTitle", parent=styles["Title"], alignment=TA_CENTER,
+        textColor=colors.HexColor("#2457A7"), fontSize=20, leading=25,
+        spaceAfter=5 * mm,
+    ))
+    styles.add(ParagraphStyle(
+        name="SectionHeading", parent=styles["Heading2"],
+        textColor=colors.HexColor("#2457A7"), fontSize=12, leading=15,
+        spaceBefore=4 * mm, spaceAfter=2 * mm,
+    ))
+    styles.add(ParagraphStyle(
+        name="SmallNote", parent=styles["BodyText"],
+        textColor=colors.HexColor("#555555"), fontSize=8, leading=11,
+    ))
+
+    is_diabetic = int(record["result"]) == 1
+    prediction_text = (
+        "Diabetes indicator detected by the model"
+        if is_diabetic else "No diabetes indicator predicted by the model"
+    )
+    result_color = colors.HexColor("#B42318" if is_diabetic else "#18794E")
+
+    story = [
+        Paragraph("Diabetes Prediction Report", styles["ReportTitle"]),
+        Paragraph(
+            "For educational screening purposes only. This report is not a medical diagnosis.",
+            styles["SmallNote"],
+        ),
+        Spacer(1, 4 * mm),
+        Paragraph("Patient Information", styles["SectionHeading"]),
+    ]
+
+    patient_table = Table([
+        ["Patient Name", Paragraph(escape(str(record.get("name", "Unknown Patient"))), styles["BodyText"])],
+        ["Report Date and Time", str(record.get("time", "Not available"))],
+    ], colWidths=[48 * mm, 115 * mm])
+    patient_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF1FB")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#1F2937")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([patient_table, Paragraph("Prediction Summary", styles["SectionHeading"])])
+
+    summary_table = Table([
+        ["Model Result", Paragraph(f'<font color="{result_color.hexval()}"><b>{escape(prediction_text)}</b></font>', styles["BodyText"])],
+        ["Diabetes Probability", f'{record["prob_d"]}%'],
+        ["Non-Diabetes Probability", f'{record["prob_nd"]}%'],
+    ], colWidths=[48 * mm, 115 * mm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF1FB")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([summary_table, Paragraph("Patient Input Values", styles["SectionHeading"])])
+
+    input_rows = [
+        ["Input Field", "Value", "Unit / Description"],
+        ["Pregnancies", str(record["pregnancies"]), "Count"],
+        ["Glucose", str(record["glucose"]), "mg/dL"],
+        ["Blood Pressure", str(record["bp"]), "mmHg"],
+        ["Skin Thickness", str(record["skin"]), "mm"],
+        ["Insulin", str(record["insulin"]), "uU/mL"],
+        ["BMI", str(record["bmi"]), "Body Mass Index"],
+        ["Diabetes Pedigree Function (DPF)", str(record["dpf"]), "Score"],
+        ["Age", str(record["age"]), "Years"],
+    ]
+    input_table = Table(input_rows, colWidths=[73 * mm, 30 * mm, 60 * mm], repeatRows=1)
+    input_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2457A7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F7FA")]),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([
+        input_table,
+        Spacer(1, 6 * mm),
+        Paragraph(
+            "Important: This machine-learning output is an estimate, not a confirmed diagnosis. "
+            "Consult a qualified healthcare professional for medical evaluation.",
+            styles["SmallNote"],
+        ),
+    ])
+    document.build(story)
+    return pdf_buffer.getvalue()
 
 # ── Session State ─────────────────────────────────────────────────────────────
 # NOTE: History stored in session_state only (memory) — works on Streamlit Cloud
@@ -329,6 +452,19 @@ if st.session_state.last_result:
                 <div style='font-size:1.05rem;font-weight:700;color:#e2e8f0;font-family:"DM Mono",monospace'>{val}</div>
             </div>""", unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
+
+    # Downloadable PDF report for the current prediction
+    st.markdown("### Download Report")
+    safe_patient_name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(r.get("name", "patient"))).strip("_")[:50]
+    safe_patient_name = safe_patient_name or "patient"
+    st.download_button(
+        label="Download PDF Report",
+        data=create_pdf_report(r),
+        file_name=f"diabetes_report_{safe_patient_name}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key="download_pdf_report",
+    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
